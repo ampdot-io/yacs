@@ -1,12 +1,10 @@
 # YACS — Yet Another Claude Setup
 
-Intent: Claude Code as a semi-autonomous agent, with robust memory and
-better defaults.
+Intent: Claude Code as a semi-autonomous agent, with robust, interpretable
+memory and better defaults.
 We don't use this for coding. If you need to use it for coding, either add
 the path to `allowRead`/`allowWrite` in `with-sandbox`, or symlink your
 project into `./projects/` (which is already auto-allowed).
-
-[Claude's entry point](./AI_README.md)
 
 ## Features
 - Support for Opus (latest), Sonnet, Haiku, Opus 4.6 fast, and Opus 3
