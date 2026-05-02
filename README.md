@@ -22,6 +22,9 @@ project into `./projects/` (which is already auto-allowed).
 
 ## First Steps
 
+Clone this repo with git (click `<> Code` and run the command) or download a .zip from
+[releases](https://github.com/ampdot-io/yacs/releases)
+
 Run `./with-sandbox` — the first session will interview you to populate
 `knowledge/people.md`.
 
