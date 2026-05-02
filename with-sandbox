@@ -162,6 +162,7 @@ if [[ -n "$RESUME_SESSION" || "$CONTINUE_SESSION" == true ]]; then
     RESUME_ARGS+=(--continue)
   fi
   exec env CLAUDE_CODE_NO_FLICKER=1 claude \
+    --thinking-display summarized \
     --permission-mode bypassPermissions \
     "${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}" \
     --effort "$EFFORT" \
@@ -171,10 +172,31 @@ if [[ -n "$RESUME_SESSION" || "$CONTINUE_SESSION" == true ]]; then
     --system-prompt ""
 fi
 
-MODEL_DISPLAY="$MODEL"
-[[ "$MODEL" == "opus" ]] && MODEL_DISPLAY="claude-opus-4-7"
+# Resolve a model alias from past session JSONLs — the "model" field there
+# is what the CLI actually used, so the mapping is validated, not guessed.
+resolve_model() {
+  local alias="$1"
+  case "$alias" in
+    claude-*) echo "$alias"; return ;;
+    opus)   local prefix="claude-opus-" ;;
+    sonnet) local prefix="claude-sonnet-" ;;
+    haiku)  local prefix="claude-haiku-" ;;
+    *) echo "$alias"; return ;;
+  esac
+  local f resolved=""
+  while IFS= read -r f; do
+    resolved=$(grep -m1 -o "\"model\":\"${prefix}[^\"]*\"" "$f" 2>/dev/null \
+               | sed -E 's/.*"model":"([^"]+)".*/\1/')
+    [[ -n "$resolved" ]] && break
+  done < <(ls -t "$SESSION_DIR"/*.jsonl 2>/dev/null | head -30)
+  echo "${resolved:-$alias}"
+}
+
+MODEL_DISPLAY=$(resolve_model "$MODEL")
+# Fast mode only applies to Opus 4.6 — suppress the bolt otherwise.
 LIGHTNING=""
-[[ "$FAST_MODE" == "true" ]] && LIGHTNING=$' \033[38;5;208m↯\033[0m'
+[[ "$FAST_MODE" == "true" && "$MODEL_DISPLAY" == "claude-opus-4-6" ]] \
+  && LIGHTNING=$' \033[38;5;208m↯\033[0m'
 BOLD=$'\033[1m'
 DIM=$'\033[2m'
 RESET=$'\033[0m'
@@ -221,6 +243,7 @@ fi
 # Fork from the cached (or freshly warmed) session.
 # No first-message arg — it's already in the forked session's history.
 exec env CLAUDE_CODE_NO_FLICKER=1 claude \
+  --thinking-display summarized \
   --permission-mode bypassPermissions \
   "${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}" \
   --effort "$EFFORT" \
