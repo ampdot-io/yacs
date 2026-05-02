@@ -49,7 +49,7 @@ Or ask Claude to give you a script to do it.
 - `--haiku` — Haiku (Opus as advisor)
 - `--opus3`, `--o3` — Opus 3 (requires `~/.claude/opus3-api-key`)
 
-All non-Opus-4.7 selections drop effort to `max`.
+All non-Opus-4.7 selections use `max` effort instead.
 
 **Session:**
 - `--continue` — continue the most recent session
