@@ -8,12 +8,13 @@ project into `./projects/` (which is already auto-allowed).
 
 ## Features
 - Support for Opus (latest), Sonnet, Haiku, Opus 4.6 fast, and Opus 3
-- Defaults to `xhigh` or `max` for `effort`
-- Built-in system prompt disabled
+- Defaults to `xhigh` or `max` for `effort` for a smarter Claude
+- Built-in system prompt disabled for a more direct relationship with claude
 - A utility-oriented memory system that supports projects, tools, skills, and knowledge
-- Sandbox enabled
+- Sandbox enabled for security
 - Remote control disabled by default for security; opt in per session with `--remote`
-- Less stimulating user interface via reduced motion, random tips, progress bar, and regular feedback disabled
+- Less stimulating user interface by enabling reduce motion and no flicker UI and disabling random tips, progress bar, and regular feedback
+- Automatically renaming sessions each turn using Haiku
 - Stable update channel
 - Session history deletion disabled
 - Syncing claude theme with system theme (currently broken on macOS — `sync-claude-theme.sh` does not detect the system appearance reliably; works on Linux/Budgie)
@@ -67,6 +68,10 @@ Both bypass the fork-cache warming that fresh sessions use.
 - macOS and Linux
 
 ## Modifying
+
+Ask Claude.
+
+## Troubleshooting
 
 Ask Claude.
 
