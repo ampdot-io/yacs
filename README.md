@@ -1,4 +1,4 @@
-# A Claude Setup
+# YACS — Yet Another Claude Setup
 
 Intent: Claude Code as a semi-autonomous agent, with robust memory and
 better defaults.
@@ -37,6 +37,28 @@ seeing it as pending.
 
 Alias this in your `~/.zshrc` or `~/.bashrc`.
 Or ask Claude to give you a script to do it.
+
+## Flags
+
+`./with-sandbox [flags] [first message]`. Unknown flags pass through to `claude`.
+
+**Model** (default: Opus 4.7 at `xhigh` effort, fast mode on):
+- `--fast` — Opus 4.6 with fast mode
+- `--slow` — disable fast mode
+- `--sonnet` — Sonnet
+- `--haiku` — Haiku (Opus as advisor)
+- `--opus3`, `--o3` — Opus 3 (requires `~/.claude/opus3-api-key`)
+
+All non-Opus-4.7 selections drop effort to `max`.
+
+**Session:**
+- `--continue` — continue the most recent session
+- `--resume <id>`, `--resume=<id>` — resume a specific session UUID
+
+Both bypass the fork-cache warming that fresh sessions use.
+
+**Other:**
+- `--remote` — enable Claude in Chrome remote control (off by default; a webpage can otherwise drive Claude)
 
 ## Operating system support
 - macOS and Linux
