@@ -13,6 +13,8 @@ description: >
   entirely on explicit task execution, urgent debugging, or "just give me the
   answer." The user wants to get stronger, not more dependent.
 license: MIT
+metadata:
+  author: joysatisficer
 ---
 
 # World Model Builder
