@@ -22,23 +22,25 @@ project into `./projects/` (which is already auto-allowed).
 
 ## First Steps
 
-Clone this repo with git (click `<> Code` and run the command) or download a .zip from
+1. Clone this repo with git (click `<> Code` and run the command) or download a .zip from
 [releases](https://github.com/ampdot-io/yacs/releases)
 
-Run `./with-sandbox` — the first session will interview you to populate
+2. Run `./with-sandbox` — the first session will interview you to populate
 `knowledge/people.md`.
 
-The template seeds `meta/instructions.md` and `knowledge/people.md` with
+3. The template seeds `meta/instructions.md` and `knowledge/people.md` with
 `<<CONFIGURE>>` markers — placeholders for things Claude can't infer
 (preferences, tools, aesthetics). To list what's pending:
 
-    grep -rn '<<CONFIGURE>>' meta/ knowledge/
+```
+grep -rn '<<CONFIGURE>>' meta/ knowledge/
+```
 
 When a section gets filled in (by you or Claude), remove the `<<CONFIGURE>>`
 marker and any "default until configured" fallback so future sessions stop
 seeing it as pending.
 
-Alias this in your `~/.zshrc` or `~/.bashrc`.
+4. Alias this in your `~/.zshrc` or `~/.bashrc`.
 Or ask Claude to give you a script to do it.
 
 ## Flags
