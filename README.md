@@ -14,7 +14,7 @@ project into `./projects/` (which is already auto-allowed).
 - Built-in system prompt disabled
 - A utility-oriented memory system that supports projects, tools, skills, and knowledge
 - Sandbox enabled
-- Remote control (Claude in Chrome) disabled by default for security; opt in per session with `--remote`
+- Remote control disabled by default for security; opt in per session with `--remote`
 - Less stimulating user interface via reduced motion, random tips, progress bar, and regular feedback disabled
 - Stable update channel
 - Session history deletion disabled
