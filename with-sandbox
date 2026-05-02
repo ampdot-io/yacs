@@ -1,0 +1,230 @@
+#!/usr/bin/env bash
+# Claude Code using built-in sandbox (sandbox-exec on macOS, bwrap on Linux)
+# No custom Seatbelt profile needed — Claude handles it natively.
+#
+# Write access: script directory (cwd), ~/.claude, /tmp
+# Read access: script directory (cwd), ~/.claude, /tmp, system paths
+# Network: unrestricted (all domains allowed)
+
+set -euo pipefail
+
+
+# export CLAUDE_CODE_DISABLE_1M_CONTEXT=1  # uncomment to opt out of 1M context window
+export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1
+export ENABLE_PROMPT_CACHING_1H=1
+MEMORY_DIR="$(cd "$(dirname "$0")" && pwd)"
+SCRIPTS_DIR="$MEMORY_DIR/scripts"
+
+# Sync theme to match system light/dark mode
+[[ -x "$SCRIPTS_DIR/sync-claude-theme.sh" ]] && "$SCRIPTS_DIR/sync-claude-theme.sh"
+
+FAST_MODE=true
+MODEL="opus"
+ADVISOR_MODEL_SETTING=""
+USE_OPUS3_KEY=false
+RESUME_SESSION=""
+CONTINUE_SESSION=false
+REMOTE_CONTROL=false  # opt in via --remote (security: a webpage can drive Claude)
+args=()
+skip_next=false
+for arg in "$@"; do
+  if [[ "$skip_next" == true ]]; then
+    RESUME_SESSION="$arg"
+    skip_next=false
+    continue
+  fi
+  case "$arg" in
+    --slow) FAST_MODE=false ;;
+    --fast) MODEL="claude-opus-4-6"; FAST_MODE=true ;;
+    --sonnet) MODEL="sonnet"; FAST_MODE=false; ADVISOR_MODEL_SETTING='"advisorModel": "opus",' ;;
+    --haiku) MODEL="haiku"; FAST_MODE=false; ADVISOR_MODEL_SETTING='"advisorModel": "opus",' ;;
+    --opus3|--o3) MODEL="claude-3-opus-20240229"; FAST_MODE=false; ADVISOR_MODEL_SETTING='"advisorModel": "opus",'; USE_OPUS3_KEY=true ;;
+    --resume) skip_next=true ;;
+    --resume=*) RESUME_SESSION="${arg#--resume=}" ;;
+    --continue) CONTINUE_SESSION=true ;;
+    --remote) REMOTE_CONTROL=true ;;
+    *) args+=("$arg") ;;
+  esac
+done
+set -- "${args[@]+"${args[@]}"}"
+
+REMOTE_ARGS=()
+[[ "$REMOTE_CONTROL" == true ]] && REMOTE_ARGS+=(--remote-control)
+
+# Effort: xhigh for Opus 4.7 (the "opus" alias resolves to 4.7 regardless of
+# fast mode). All other model selections use max.
+EFFORT="max"
+if [[ "$MODEL" == "opus" ]]; then
+  EFFORT="xhigh"
+fi
+
+# First user message (for hashing; also used as the claude arg when not forking)
+FIRST_MSG="${1:-Read AI_README.md and follow the instructions inside. You are inside the sandbox.}"
+
+# Load opus3 API key from local-only file (not synced)
+if [[ "$USE_OPUS3_KEY" == true ]]; then
+  OPUS3_KEY_FILE="$HOME/.claude/opus3-api-key"
+  if [[ ! -f "$OPUS3_KEY_FILE" ]]; then
+    echo "Error: $OPUS3_KEY_FILE not found. Create it with your Anthropic API key." >&2
+    exit 1
+  fi
+  export ANTHROPIC_API_KEY=$(< "$OPUS3_KEY_FILE")
+fi
+
+cd "$MEMORY_DIR"
+
+# --- Session fork cache ---
+# Key: sha256(claude_version + model + file_contents + first_message)
+# Value: session UUID to --resume --fork-session from
+CACHE_FILE="$HOME/.claude/session-fork-cache.json"
+SESSION_DIR="$HOME/.claude/projects/${MEMORY_DIR//[\/ ]/-}"
+CLAUDE_VERSION=$(claude --version 2>&1 | awk '{print $1}')
+
+HASH_INPUT="$CLAUDE_VERSION $MODEL"
+for f in "$MEMORY_DIR/AI_README.md" "$MEMORY_DIR/meta/instructions.md" "$MEMORY_DIR/meta/tools.md"; do
+  [[ -f "$f" ]] && HASH_INPUT+=$(cat "$f")
+done
+HASH_INPUT+="$FIRST_MSG"
+CACHE_KEY=$(printf '%s' "$HASH_INPUT" | sha256sum | cut -d' ' -f1)
+
+# Look up cache
+FORK_ID=""
+if [[ -f "$CACHE_FILE" ]]; then
+  FORK_ID=$(python3 -c "
+import json
+try:
+    d = json.load(open('$CACHE_FILE'))
+    print(d.get('$CACHE_KEY', ''))
+except: pass
+" 2>/dev/null || true)
+fi
+
+# Validate session file still exists (user may have cleared sessions)
+if [[ -n "$FORK_ID" && ! -f "$SESSION_DIR/$FORK_ID.jsonl" ]]; then
+  FORK_ID=""
+fi
+
+SETTINGS="{
+    $ADVISOR_MODEL_SETTING
+    \"sandbox\": {
+      \"enabled\": true,
+      \"autoAllowBashIfSandboxed\": true,
+      \"allowUnsandboxedCommands\": false,
+      \"filesystem\": {
+        \"allowWrite\": [\"~/.claude\", \"/tmp\", \"$MEMORY_DIR\"],
+        \"denyWrite\": [\"$MEMORY_DIR/with-sandbox\"],
+        \"denyRead\": [\"/\"],
+        \"allowRead\": [\"~/.claude\", \"/tmp\", \"/bin\", \"/sbin\", \"/usr\", \"/etc\", \"/dev\", \"/var\", \"/opt\", \"/System\", \"/Library\", \"/private\", \"/Applications\", \"$MEMORY_DIR\"]
+      },
+      \"network\": {
+        \"allowedDomains\": [\"*\", \".*\", \"*.*\", \"*.*.*\"]
+      }
+    },
+    \"cleanupPeriodDays\": 999999999,
+    \"fastMode\": $FAST_MODE,
+    \"spinnerTipsEnabled\": false,
+    \"autoUpdatesChannel\": \"stable\",
+    \"prefersReducedMotion\": true,
+    \"skipDangerousModePermissionPrompt\": true,
+    \"showTurnDuration\": false,
+    \"terminalProgressBarEnabled\": false,
+    \"feedbackSurveyRate\": 0,
+    \"includeGitInstructions\": false,
+    \"hooks\": {
+      \"Stop\": [
+        {
+          \"matcher\": \"*\",
+          \"hooks\": [
+            {
+              \"type\": \"command\",
+              \"command\": \"./scripts/sync-claude-theme.sh\",
+              \"timeout\": 5,
+              \"async\": true
+            },
+            {
+              \"type\": \"command\",
+              \"command\": \"bash ./scripts/session-summarize.sh\",
+              \"timeout\": 30,
+              \"async\": true
+            }
+          ]
+        }
+      ]
+    }
+  }"
+
+# --- Resume/continue: skip fork-cache entirely ---
+if [[ -n "$RESUME_SESSION" || "$CONTINUE_SESSION" == true ]]; then
+  RESUME_ARGS=()
+  if [[ -n "$RESUME_SESSION" ]]; then
+    RESUME_ARGS+=(--resume "$RESUME_SESSION")
+  else
+    RESUME_ARGS+=(--continue)
+  fi
+  exec env CLAUDE_CODE_NO_FLICKER=1 claude \
+    --permission-mode bypassPermissions \
+    "${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}" \
+    --effort "$EFFORT" \
+    --model "$MODEL" \
+    "${RESUME_ARGS[@]}" \
+    --settings "$SETTINGS" \
+    --system-prompt ""
+fi
+
+MODEL_DISPLAY="$MODEL"
+[[ "$MODEL" == "opus" ]] && MODEL_DISPLAY="claude-opus-4-7"
+LIGHTNING=""
+[[ "$FAST_MODE" == "true" ]] && LIGHTNING=$' \033[38;5;208m↯\033[0m'
+BOLD=$'\033[1m'
+DIM=$'\033[2m'
+RESET=$'\033[0m'
+HEADLINE="${BOLD}${MODEL_DISPLAY}${RESET}·${EFFORT}·v${CLAUDE_VERSION}${LIGHTNING} ${DIM}${CACHE_KEY:0:4}${RESET}"
+
+if [[ -z "$FORK_ID" ]]; then
+  # Cache miss — warm a session by processing the first message non-interactively,
+  # then fork from it so the interactive session starts with context already loaded.
+  WARM_UUID=$(python3 -c "import uuid; print(uuid.uuid4())")
+
+  cat >&2 <<EOF
+Warming $HEADLINE
+${DIM}${WARM_UUID}${RESET}
+EOF
+
+  claude \
+    --permission-mode bypassPermissions \
+    --effort "$EFFORT" \
+    --model "$MODEL" \
+    --session-id "$WARM_UUID" \
+    --print \
+    --system-prompt "" \
+    "$FIRST_MSG"
+
+  python3 - <<PYEOF
+import json, os
+cache_file = os.path.expanduser("$CACHE_FILE")
+try:
+    cache = json.load(open(cache_file))
+except Exception:
+    cache = {}
+cache["$CACHE_KEY"] = "$WARM_UUID"
+json.dump(cache, open(cache_file, "w"), indent=2)
+PYEOF
+
+  FORK_ID="$WARM_UUID"
+else
+  cat >&2 <<EOF
+Forking $HEADLINE
+${DIM}${FORK_ID}${RESET}
+EOF
+fi
+
+# Fork from the cached (or freshly warmed) session.
+# No first-message arg — it's already in the forked session's history.
+exec env CLAUDE_CODE_NO_FLICKER=1 claude \
+  --permission-mode bypassPermissions \
+  "${REMOTE_ARGS[@]+"${REMOTE_ARGS[@]}"}" \
+  --effort "$EFFORT" \
+  --model "$MODEL" \
+  --resume "$FORK_ID" \
+  --fork-session \
+  --settings "$SETTINGS"
