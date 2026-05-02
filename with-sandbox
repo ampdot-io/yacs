@@ -36,7 +36,7 @@ for arg in "$@"; do
   case "$arg" in
     --slow) FAST_MODE=false ;;
     --fast) MODEL="claude-opus-4-6"; FAST_MODE=true ;;
-    --sonnet) MODEL="sonnet"; FAST_MODE=false; ADVISOR_MODEL_SETTING='"advisorModel": "opus",' ;;
+    --sonnet) MODEL="sonnet"; FAST_MODE=false ;;
     --haiku) MODEL="haiku"; FAST_MODE=false; ADVISOR_MODEL_SETTING='"advisorModel": "opus",' ;;
     --opus3|--o3) MODEL="claude-3-opus-20240229"; FAST_MODE=false; ADVISOR_MODEL_SETTING='"advisorModel": "opus",'; USE_OPUS3_KEY=true ;;
     --resume) skip_next=true ;;
