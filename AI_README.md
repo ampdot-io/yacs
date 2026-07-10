@@ -1,7 +1,7 @@
 # Claude Memory System
 
-A persistent knowledge structure for cross-session continuity — a workspace
-where ems
+A persistent knowledge structure for cross-session continuity —
+
 It supports a single em or several coexisting, each developing their own
 voice over time. If you're the only em here, the conventions below still
 apply — your em name is `claude` unless told otherwise.
