@@ -1,0 +1,270 @@
+#!/usr/bin/env expect -f
+# claude-pty-wrapper.exp — run `claude` inside a pty so an external SIGTERM
+# can gracefully end the session before claude is killed:
+#
+#   on SIGTERM to this wrapper (session is ending):
+#     - fast path: if the last completed turn was an auto-checkpoint and nothing
+#       has happened since, the em already saved — just SIGTERM claude, no msg.
+#     - otherwise:
+#       1. inject Esc Esc                        (cancels any in-flight turn)
+#       2. inject "save notes and end session\r" (drives the em's Session Checkpoint)
+#       3. wait for the next Stop hook to fire   (= claude finished the turn)
+#       4. SIGTERM claude                        (claude exits cleanly on TERM)
+#       5. SIGKILL fallback after a deadline
+#
+#   after 55 min of two-way inactivity (session is being paused, not killed):
+#     inject Esc Esc, then a Userscript "save notes / paused" message so the em
+#     runs its Session Checkpoint before Anthropic's 1-hour prompt-cache TTL
+#     elapses. The timer resets on any traffic in either direction.
+#
+#   keep-warm: once that first auto-checkpoint completes, ping the em
+#     ("Keeping cache warm. No reply needed.") every 20 min to hold the prompt
+#     cache open — BUT only while the cache is still warm. The Stop sentinel's
+#     mtime tracks the last completed turn (= last cache write); if that is
+#     older than the 1-hour TTL (e.g. the laptop slept with the lid closed),
+#     the cache is already gone, so we STOP pinging rather than re-pay the full
+#     input-token cost to warm a dead cache. The 55-min checkpoint nudge is
+#     gated the same way, so a wake-from-sleep doesn't trigger a cold-cache
+#     nudge. (Explicit SIGTERM shutdown still saves regardless — see above.)
+#
+# All argv is forwarded as args to `claude`.
+#
+# Required env:
+#   STOP_SENTINEL — file the Stop hook appends one timestamp to per turn;
+#                   we snapshot its size on shutdown and wait for it to grow.
+# Optional env:
+#   CLAUDE_GRACEFUL_TIMEOUT — seconds before forced shutdown (default 60)
+
+set sentinel ""
+if {[info exists ::env(STOP_SENTINEL)]} {
+    set sentinel $::env(STOP_SENTINEL)
+}
+set graceful_timeout 60
+if {[info exists ::env(CLAUDE_GRACEFUL_TIMEOUT)]} {
+    set graceful_timeout $::env(CLAUDE_GRACEFUL_TIMEOUT)
+}
+
+# Two-way-inactivity window before an auto-checkpoint nudge (default 55 min,
+# just inside Anthropic's 1-hour prompt-cache TTL). Lower it to test quickly.
+set idle_pause 3300
+if {[info exists ::env(CLAUDE_IDLE_PAUSE)]} {
+    set idle_pause $::env(CLAUDE_IDLE_PAUSE)
+}
+
+# Keep-warm ping interval after the first auto-checkpoint (default 20 min).
+set keepwarm_interval 1200
+if {[info exists ::env(CLAUDE_KEEPWARM_INTERVAL)]} {
+    set keepwarm_interval $::env(CLAUDE_KEEPWARM_INTERVAL)
+}
+
+# Prompt-cache TTL (default 1 hr). Automatic nudges/pings hold off once the
+# last completed turn is older than this — the cache is gone and a new message
+# would re-pay the full input-token cost. Lower it to test quickly.
+set cache_ttl 3600
+if {[info exists ::env(CLAUDE_CACHE_TTL)]} {
+    set cache_ttl $::env(CLAUDE_CACHE_TTL)
+}
+
+# spawn inherits our controlling terminal's size for the new pty.
+spawn -noecho claude {*}$argv
+set claude_pid [exp_pid]
+set claude_spawn_id $spawn_id
+
+# Byte-transparent relay. The system expect (5.45 / Tcl 8.5) cannot represent
+# non-BMP codepoints (flag emoji etc.): with utf-8 channel encodings, the
+# decode/re-encode that every byte of traffic passes through garbles them.
+# -encoding binary maps bytes 1:1 with no re-encoding. It must be set on BOTH
+# sides (claude pty + user tty): binary on one and utf-8 on the other
+# double-encodes ALL non-ASCII output into mojibake (2026-07-05 regression —
+# `encoding system` only affects channels created after it, so it changed the
+# pty side but not the user tty). Translation settings are left untouched.
+# If either side can't be set, force both back to utf-8: symmetric utf-8 only
+# garbles non-BMP chars; asymmetry garbles everything.
+if {[catch {
+    fconfigure $claude_spawn_id -encoding binary
+    fconfigure $user_spawn_id -encoding binary
+}]} {
+    catch {fconfigure $claude_spawn_id -encoding utf-8}
+    catch {fconfigure $user_spawn_id -encoding utf-8}
+}
+
+# Inject a message as typed text, then Enter as a SEPARATE keystroke after a
+# pause. A trailing \r in the same write gets batched with the text by Claude
+# Code's rapid-input (paste) detection and becomes a literal newline in the
+# input box — the message just sits there unsent.
+proc inject_msg {text} {
+    catch {send -i $::claude_spawn_id -- $text}
+    after 400
+    catch {send -i $::claude_spawn_id -- "\r"}
+}
+
+# expect 5.45's `interact` does not auto-propagate SIGWINCH; do it manually.
+trap {
+    catch {
+        set s [exec stty size < /dev/tty]
+        stty rows [lindex $s 0] columns [lindex $s 1] < $spawn_out(slave,name)
+    }
+} SIGWINCH
+
+set shutting_down 0
+set sentinel_baseline 0
+set shutdown_deadline 0
+
+# Fast-path bookkeeping for SIGTERM-after-auto-checkpoint:
+#   ap_baseline     — sentinel size captured when the idle nudge is injected
+#   checkpoint_size — sentinel size once the auto-checkpoint's Stop hook fired,
+#                     advanced by 1 per keep-warm ping so pings stay "clean"
+#                     (-1 = no completed auto-checkpoint is pending)
+#   keepwarm_active — 1 while the 20-min keep-warm ping loop is running
+set checkpoint_size -1
+set ap_baseline 0
+set keepwarm_active 0
+
+# Polled by `after`: did the Stop hook fire (sentinel grew)? If so, TERM
+# claude. Otherwise fall back to TERM at the deadline, then KILL.
+proc check_stop {} {
+    global claude_pid sentinel sentinel_baseline shutdown_deadline
+    if {[clock seconds] >= $shutdown_deadline} {
+        catch {exec kill -TERM $claude_pid}
+        after 2000 { catch {exec kill -KILL $::claude_pid} }
+        return
+    }
+    if {$sentinel ne ""} {
+        set sz 0
+        catch {set sz [file size $sentinel]}
+        if {$sz > $sentinel_baseline} {
+            catch {exec kill -TERM $claude_pid}
+            return
+        }
+    }
+    after 300 check_stop
+}
+
+# Is the prompt cache still warm? Proxy: the Stop sentinel's mtime is the time
+# of the last completed turn (= last cache write). If that is older than
+# cache_ttl, the cache has expired and any new message pays the full input
+# cost — so automatic nudges/pings should hold off. Unknown -> assume warm.
+proc cache_warm {} {
+    global sentinel cache_ttl
+    if {$sentinel eq ""} { return 1 }
+    set mt 0
+    catch {set mt [file mtime $sentinel]}
+    if {$mt <= 0} { return 1 }
+    return [expr {[clock seconds] - $mt < $cache_ttl}]
+}
+
+# After an idle nudge, poll for the resulting auto-checkpoint's Stop hook.
+# When the sentinel grows past the baseline we captured at nudge time, the
+# em has finished checkpointing — record that size so a later SIGTERM can
+# detect "nothing happened since" and skip the redundant end-session message,
+# then start the keep-warm ping loop.
+proc watch_checkpoint {tries} {
+    global sentinel ap_baseline checkpoint_size keepwarm_active keepwarm_interval
+    if {$tries <= 0 || $sentinel eq ""} return
+    set sz 0
+    catch {set sz [file size $sentinel]}
+    if {$sz > $ap_baseline} {
+        set checkpoint_size $sz
+        if {!$keepwarm_active} {
+            set keepwarm_active 1
+            after [expr {$keepwarm_interval * 1000}] keep_warm
+        }
+        return
+    }
+    after 500 [list watch_checkpoint [expr {$tries - 1}]]
+}
+
+# Keep-warm loop: ping the em every keepwarm_interval to hold the prompt cache
+# open, but only while the cache is still warm. If the last completed turn is
+# older than cache_ttl (e.g. the laptop slept past the TTL), the cache is gone
+# — stop pinging rather than re-pay the full input cost to warm a dead cache.
+proc keep_warm {} {
+    global shutting_down claude_spawn_id sentinel keepwarm_interval keepwarm_active
+    if {$shutting_down} { set keepwarm_active 0; return }
+    if {![cache_warm]} { set keepwarm_active 0; return }
+    set base 0
+    if {$sentinel ne ""} { catch {set base [file size $sentinel]} }
+    inject_msg "Keeping cache warm. No reply needed."
+    # Fold this ping's Stop hook into checkpoint_size (+1) so a later SIGTERM
+    # still fast-paths: keep-warm pings aren't substantive work to re-save.
+    after 600 [list absorb_ping $base 600]
+    after [expr {$keepwarm_interval * 1000}] keep_warm
+}
+
+# Wait for a keep-warm ping's Stop hook, then advance checkpoint_size by 1.
+# Advancing by exactly 1 (not to the observed size) errs safe: if the user
+# also did real work in this window, the sentinel outruns checkpoint_size and
+# SIGTERM correctly takes the slow (save) path.
+proc absorb_ping {base tries} {
+    global sentinel checkpoint_size
+    if {$tries <= 0 || $sentinel eq ""} return
+    set sz 0
+    catch {set sz [file size $sentinel]}
+    if {$sz > $base} {
+        if {$checkpoint_size >= 0} {
+            set checkpoint_size [expr {$checkpoint_size + 1}]
+        }
+        return
+    }
+    after 500 [list absorb_ping $base [expr {$tries - 1}]]
+}
+
+trap {
+    if {$shutting_down} return
+    set shutting_down 1
+
+    # Fast path: the last completed turn was an auto-checkpoint and nothing
+    # has happened since (sentinel still at the size we recorded then). The
+    # em already saved — just TERM claude, skip the end-session message.
+    set sz -1
+    if {$sentinel ne ""} {
+        catch {set sz [file size $sentinel]}
+    }
+    if {$checkpoint_size >= 0 && $sz == $checkpoint_size} {
+        catch {exec kill -TERM $claude_pid}
+        after 3000 { catch {exec kill -KILL $::claude_pid} }
+        return
+    }
+
+    catch {send -i $claude_spawn_id -- "\033\033"}
+
+    # After any cancellation-Stop has had time to fire, snapshot the
+    # sentinel size, then send the end-session message and start polling.
+    after 500 {
+        set ::sentinel_baseline 0
+        if {$::sentinel ne ""} {
+            catch {set ::sentinel_baseline [file size $::sentinel]}
+        }
+        inject_msg "save notes and end session"
+        set ::shutdown_deadline [expr {[clock seconds] + $::graceful_timeout}]
+        after 500 check_stop
+    }
+} SIGTERM
+
+# Auto-checkpoint: after 55 min (3300s) with no traffic in either direction,
+# nudge the em to save its notes before Anthropic's 1-hour prompt-cache TTL
+# elapses. Any activity (user keystroke or claude output) resets the timer.
+# This does NOT kill claude — the session stays alive and can resume.
+interact -timeout $idle_pause {
+    if {!$::shutting_down && [cache_warm]} {
+        set ::ap_baseline 0
+        if {$::sentinel ne ""} {
+            catch {set ::ap_baseline [file size $::sentinel]}
+        }
+        catch {send -i $::claude_spawn_id -- "\033\033"}
+        after 200
+        inject_msg "\[Userscript message: Save notes. Session is being automatically paused due to inactivity.\]"
+        # Poll up to ~5 min for the auto-checkpoint's Stop hook to fire,
+        # then begin the keep-warm ping loop.
+        after 600 [list watch_checkpoint 600]
+    }
+}
+
+# Reap and propagate claude's exit status.
+catch {wait} result
+catch {if {$sentinel ne ""} {file delete $sentinel}}
+set code 0
+if {[llength $result] >= 4} {
+    set code [lindex $result 3]
+}
+exit $code
