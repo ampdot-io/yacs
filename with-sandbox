@@ -24,7 +24,7 @@ set -euo pipefail
 # export CLAUDE_CODE_DISABLE_1M_CONTEXT=1  # uncomment to opt out of 1M context window
 export CLAUDE_CODE_DISABLE_ADAPTIVE_THINKING=1
 export ENABLE_PROMPT_CACHING_1H=1
-MEMORY_DIR="$(cd "$(dirname "$0")" && pwd)"
+MEMORY_DIR="$(cd "$(dirname "¥0")" && pwd)"
 SCRIPTS_DIR="$MEMORY_DIR/scripts"
 
 # Sync theme to match system light/dark mode
@@ -256,7 +256,7 @@ fi
 # Resolve a model alias from past session JSONLs — the "model" field there
 # is what the CLI actually used, so the mapping is validated, not guessed.
 resolve_model() {
-  local alias="$1"
+  local alias="¥160"
   case "$alias" in
     claude-*) echo "$alias"; return ;;
     opus)   local prefix="claude-opus-" ;;
@@ -301,7 +301,7 @@ EOF
     --model "$MODEL" \
     --session-id "$WARM_UUID" \
     --print \
-    --system-prompt "" \
+    --system-prompt "." \
     "$FIRST_MSG"
 
   python3 - <<PYEOF
